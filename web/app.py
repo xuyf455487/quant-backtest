@@ -14,6 +14,7 @@ import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import plotly.io as pio
 from datetime import datetime
+from typing import Callable, Optional
 
 import sys
 from pathlib import Path
@@ -21,6 +22,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 from scripts.sim_data import generate_stock_data, STRATEGY_DESCRIPTIONS, get_demo_result
 from backtest.engine import run_backtest
+from portfolio.data import fetch_hist
 from strategies.ma_cross import MovingAverageCrossStrategy
 from strategies.rsi import RSIStrategy
 from strategies.macd import MACDStrategy
@@ -42,10 +44,143 @@ STRATEGY_MAP = {
     "bollinger": BollingerBandsStrategy,
 }
 
+FALLBACK_HOT_STOCKS = [
+    {"symbol": "sh600519", "code": "600519", "name": "贵州茅台", "latest": 1500.0, "change_pct": 0.0, "turnover": 0.0},
+    {"symbol": "sz300750", "code": "300750", "name": "宁德时代", "latest": 200.0, "change_pct": 0.0, "turnover": 0.0},
+    {"symbol": "sh600036", "code": "600036", "name": "招商银行", "latest": 35.0, "change_pct": 0.0, "turnover": 0.0},
+    {"symbol": "sz002594", "code": "002594", "name": "比亚迪", "latest": 250.0, "change_pct": 0.0, "turnover": 0.0},
+    {"symbol": "sh600030", "code": "600030", "name": "中信证券", "latest": 20.0, "change_pct": 0.0, "turnover": 0.0},
+    {"symbol": "sh601012", "code": "601012", "name": "隆基绿能", "latest": 18.0, "change_pct": 0.0, "turnover": 0.0},
+    {"symbol": "sz300059", "code": "300059", "name": "东方财富", "latest": 12.0, "change_pct": 0.0, "turnover": 0.0},
+    {"symbol": "sh601318", "code": "601318", "name": "中国平安", "latest": 45.0, "change_pct": 0.0, "turnover": 0.0},
+    {"symbol": "sz000002", "code": "000002", "name": "万科A", "latest": 8.0, "change_pct": 0.0, "turnover": 0.0},
+    {"symbol": "sh510300", "code": "510300", "name": "沪深300ETF", "latest": 4.0, "change_pct": 0.0, "turnover": 0.0},
+]
+
 
 def _chart_json(fig: go.Figure) -> str:
     """Serialize Plotly figures as data so the browser can render them explicitly."""
     return pio.to_json(fig, validate=False)
+
+
+def normalize_a_share_symbol(symbol: str) -> str:
+    """Normalize common A-share inputs to exchange-prefixed symbols."""
+    raw = (symbol or "").strip().lower()
+    if raw.startswith(("sh", "sz", "bj")):
+        return raw
+    code = "".join(ch for ch in raw if ch.isdigit())
+    if code.startswith(("6", "5")):
+        return f"sh{code}"
+    if code.startswith(("0", "2", "3")):
+        return f"sz{code}"
+    if code.startswith(("4", "8")):
+        return f"bj{code}"
+    return raw
+
+
+def _symbol_parts(symbol: str) -> tuple[str, str]:
+    normalized = normalize_a_share_symbol(symbol)
+    code = normalized[2:] if normalized[:2] in ("sh", "sz", "bj") else normalized
+    return normalized, code
+
+
+def _fallback_hot_stocks(limit: int = 10) -> list[dict]:
+    return FALLBACK_HOT_STOCKS[:limit]
+
+
+def build_hot_stocks_payload(fetcher: Optional[Callable[[], pd.DataFrame]] = None, limit: int = 10) -> dict:
+    """Build A-share hot stock payload from realtime turnover rank with fallback."""
+    if fetcher is None:
+        import akshare as ak
+        fetcher = ak.stock_zh_a_spot_em
+
+    try:
+        df = fetcher()
+        if df is None or df.empty:
+            raise ValueError("empty realtime hot stock data")
+        df = df.sort_values("成交额", ascending=False).head(limit)
+        items = []
+        for _, row in df.iterrows():
+            code = str(row["代码"]).zfill(6)
+            symbol = normalize_a_share_symbol(code)
+            items.append({
+                "symbol": symbol,
+                "code": code,
+                "name": str(row.get("名称", "")),
+                "latest": round(float(row.get("最新价", 0) or 0), 2),
+                "change_pct": round(float(row.get("涨跌幅", 0) or 0), 2),
+                "turnover": round(float(row.get("成交额", 0) or 0), 2),
+            })
+        return {"source": "realtime", "items": items}
+    except Exception:
+        return {"source": "fallback", "items": _fallback_hot_stocks(limit)}
+
+
+def build_stock_lookup_payload(
+    symbol: str,
+    hot_stock_fetcher: Optional[Callable[[], pd.DataFrame]] = None,
+) -> dict:
+    """Resolve a stock code to normalized symbol and best-effort name."""
+    normalized, code = _symbol_parts(symbol)
+    hot_payload = build_hot_stocks_payload(fetcher=hot_stock_fetcher, limit=80)
+    for item in hot_payload["items"]:
+        if item["symbol"] == normalized or item["code"] == code:
+            return {
+                "symbol": item["symbol"],
+                "code": item["code"],
+                "name": item["name"],
+                "latest": item["latest"],
+                "source": hot_payload["source"],
+            }
+    for item in FALLBACK_HOT_STOCKS:
+        if item["symbol"] == normalized or item["code"] == code:
+            return {
+                "symbol": item["symbol"],
+                "code": item["code"],
+                "name": item["name"],
+                "latest": item["latest"],
+                "source": "fallback",
+            }
+    return {"symbol": normalized, "code": code, "name": None, "latest": None, "source": "unknown"}
+
+
+def prepare_backtest_dataset(
+    symbol: str,
+    days: int,
+    start_price: Optional[float],
+    auto_price: bool = True,
+    use_real_data: bool = True,
+    seed: int = 42,
+    hist_fetcher: Callable[[str, int], pd.DataFrame] = fetch_hist,
+) -> tuple[pd.DataFrame, dict]:
+    """Prepare historical data first, with simulated fallback and price metadata."""
+    normalized = normalize_a_share_symbol(symbol)
+    if use_real_data:
+        try:
+            data = hist_fetcher(normalized, days)
+            if data is not None and not data.empty:
+                first_close = round(float(data["close"].iloc[0]), 2)
+                return data, {
+                    "symbol": normalized,
+                    "data_source": "historical",
+                    "price_source": "historical_first_close",
+                    "start_price": first_close,
+                }
+        except Exception:
+            pass
+
+    simulated_start = 100.0
+    price_source = "simulated_default"
+    if not auto_price and start_price is not None:
+        simulated_start = float(start_price)
+        price_source = "manual_override"
+    data = generate_stock_data(symbol=normalized, days=days, start_price=simulated_start, seed=seed)
+    return data, {
+        "symbol": normalized,
+        "data_source": "simulated_fallback",
+        "price_source": price_source,
+        "start_price": round(float(simulated_start), 2),
+    }
 
 
 def build_compare_payload(strategy_ids: list, data: pd.DataFrame, initial_capital: float = 100000) -> dict:
@@ -280,22 +415,41 @@ async def list_strategies():
     }
 
 
+@app.get("/api/hot-stocks")
+async def hot_stocks(limit: int = Query(10, ge=1, le=30)):
+    """获取A股成交额热门股，失败时返回内置备用列表"""
+    return build_hot_stocks_payload(limit=limit)
+
+
+@app.get("/api/stock/lookup")
+async def stock_lookup(symbol: str = Query(..., description="股票代码")):
+    """解析A股股票名称和规范代码"""
+    return build_stock_lookup_payload(symbol)
+
+
 @app.get("/api/backtest")
 async def run_backtest_api(
     strategy_id: str = Query("ma_cross", description="策略ID"),
     symbol: str = Query("sh600519", description="股票代码"),
     days: int = Query(500, description="数据天数", ge=100, le=2000),
-    start_price: float = Query(100, description="起始价格", ge=10),
+    start_price: Optional[float] = Query(None, description="手动起始价格", ge=10),
     cash: float = Query(100000, description="初始资金"),
+    auto_price: bool = Query(True, description="是否自动使用历史首日价格"),
+    use_real_data: bool = Query(True, description="是否优先使用真实历史行情"),
     seed: int = Query(42, description="随机种子"),
 ):
     """运行回测并返回结果"""
     if strategy_id not in STRATEGY_MAP:
         raise HTTPException(400, f"不支持的策略: {strategy_id}，可选: {list(STRATEGY_MAP.keys())}")
 
-    # 生成模拟数据
-    data = generate_stock_data(symbol=symbol, days=days,
-                                start_price=start_price, seed=seed)
+    data, data_meta = prepare_backtest_dataset(
+        symbol=symbol,
+        days=days,
+        start_price=start_price,
+        auto_price=auto_price,
+        use_real_data=use_real_data,
+        seed=seed,
+    )
 
     # 创建策略
     cls = STRATEGY_MAP[strategy_id]
@@ -308,6 +462,10 @@ async def run_backtest_api(
     chart_html = build_chart(data, result)
 
     return {
+        "symbol": data_meta["symbol"],
+        "data_source": data_meta["data_source"],
+        "price_source": data_meta["price_source"],
+        "start_price": data_meta["start_price"],
         "metrics": result.summary(),
         "trade_count": len(result.trade_log),
         "errors": result.errors,
@@ -324,6 +482,10 @@ async def demo_backtest():
 
     return {
         "strategy": name,
+        "symbol": "sh600519",
+        "data_source": "simulated_demo",
+        "price_source": "demo_seed_price",
+        "start_price": round(float(data["close"].iloc[0]), 2),
         "metrics": result.summary(),
         "chart": chart_html,
     }
@@ -488,6 +650,69 @@ _PAGE_HTML = """
             box-shadow: 0 0 0 3px var(--blue-soft);
         }
 
+        .symbol-field {
+            min-width: 190px;
+        }
+
+        .field-hint {
+            min-height: 15px;
+            color: var(--muted);
+            font-size: 11px;
+            line-height: 1.3;
+        }
+
+        .readonly-field {
+            height: 38px;
+            display: flex;
+            align-items: center;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel-muted);
+            color: var(--muted);
+            padding: 0 11px;
+            font-size: 13px;
+        }
+
+        .advanced-settings {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 0 14px;
+            margin: -2px 0 12px;
+        }
+
+        .advanced-settings summary {
+            cursor: pointer;
+            color: var(--muted);
+            font-size: 12px;
+            font-weight: 700;
+            padding: 12px 0;
+        }
+
+        .advanced-settings[open] {
+            padding-bottom: 14px;
+        }
+
+        .manual-toggle {
+            display: inline-flex;
+            align-items: center;
+            gap: 8px;
+            color: #334155;
+            font-size: 13px;
+            margin-right: 16px;
+        }
+
+        .control-field.compact {
+            max-width: 180px;
+            margin-top: 10px;
+        }
+
+        .control-field input:disabled {
+            color: var(--muted-2);
+            cursor: not-allowed;
+        }
+
         .btn-primary {
             height: 38px;
             align-self: end;
@@ -502,6 +727,95 @@ _PAGE_HTML = """
 
         .btn-primary:hover { background: #1e40af; }
         .btn-primary:active { transform: translateY(1px); }
+
+        .hot-stocks-panel {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 14px;
+            margin-bottom: 12px;
+        }
+
+        .section-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .section-header h2 {
+            font-size: 14px;
+            font-weight: 750;
+        }
+
+        .section-header span {
+            color: var(--muted);
+            font-size: 12px;
+        }
+
+        .hot-stocks-grid {
+            display: grid;
+            grid-template-columns: repeat(5, minmax(0, 1fr));
+            gap: 8px;
+        }
+
+        .hot-stock-card {
+            min-height: 72px;
+            text-align: left;
+            border: 1px solid var(--line);
+            border-radius: 8px;
+            background: var(--panel-muted);
+            padding: 10px;
+            cursor: pointer;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            gap: 8px;
+            transition: border-color 0.15s, background 0.15s, transform 0.1s;
+        }
+
+        .hot-stock-card:hover,
+        .hot-stock-card.active {
+            border-color: var(--blue);
+            background: #eff6ff;
+        }
+
+        .hot-stock-card:active {
+            transform: translateY(1px);
+        }
+
+        .stock-main {
+            display: flex;
+            align-items: baseline;
+            justify-content: space-between;
+            gap: 8px;
+            color: var(--text);
+            font-size: 13px;
+            font-weight: 750;
+        }
+
+        .stock-main small {
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 600;
+        }
+
+        .stock-meta {
+            display: grid;
+            grid-template-columns: auto auto;
+            gap: 2px 8px;
+            color: var(--muted);
+            font-size: 11px;
+        }
+
+        .stock-price {
+            color: var(--text);
+        }
+
+        .stock-change.positive { color: var(--green); }
+        .stock-change.negative { color: var(--red); }
 
         .metrics-grid {
             display: grid;
@@ -682,6 +996,10 @@ _PAGE_HTML = """
                 grid-template-columns: repeat(3, minmax(0, 1fr));
             }
 
+            .hot-stocks-grid {
+                grid-template-columns: repeat(2, minmax(0, 1fr));
+            }
+
             .analysis-grid {
                 grid-template-columns: 1fr;
             }
@@ -707,8 +1025,14 @@ _PAGE_HTML = """
             }
 
             .run-strip,
+            .hot-stocks-grid,
             .metrics-grid {
                 grid-template-columns: 1fr;
+            }
+
+            .section-header {
+                align-items: flex-start;
+                flex-direction: column;
             }
 
             .btn-primary {
@@ -761,23 +1085,47 @@ _PAGE_HTML = """
                         <option value="bollinger">布林带突破</option>
                     </select>
                 </div>
-                <div class="control-field">
-                    <label for="symbol">股票代码</label>
-                    <input id="symbol" type="text" value="sh600519">
+                <div class="control-field symbol-field">
+                    <label for="symbol">标的</label>
+                    <input id="symbol" type="text" value="sh600519" oninput="scheduleSymbolLookup()">
+                    <span id="symbolIdentity" class="field-hint">识别标的中...</span>
                 </div>
                 <div class="control-field">
                     <label for="days">数据天数</label>
                     <input id="days" type="number" value="500" min="100" max="2000">
                 </div>
                 <div class="control-field">
-                    <label for="price">起始价格(¥)</label>
-                    <input id="price" type="number" value="100" min="10">
+                    <label>起始价</label>
+                    <div id="priceSource" class="readonly-field">自动 · 历史首日收盘价</div>
                 </div>
                 <div class="control-field">
                     <label for="cash">初始资金(¥)</label>
                     <input id="cash" type="number" value="100000" min="10000">
                 </div>
                 <button class="btn-primary" onclick="runBacktest()">运行回测</button>
+            </section>
+
+            <details id="advancedSettings" class="advanced-settings">
+                <summary>高级设置</summary>
+                <label class="manual-toggle">
+                    <input id="manualPriceToggle" type="checkbox" onchange="toggleManualPrice()">
+                    手动覆盖起始价格
+                </label>
+                <div class="control-field compact">
+                    <label for="price">起始价格(¥)</label>
+                    <input id="price" type="number" value="100" min="10" disabled>
+                </div>
+            </details>
+
+            <section class="hot-stocks-panel">
+                <div class="section-header">
+                    <div>
+                        <h2>热门 A 股</h2>
+                        <span>成交额榜 Top 10，接口失败时使用备用热门池</span>
+                    </div>
+                    <span id="hotStocksSource">加载中</span>
+                </div>
+                <div id="hotStocks" class="hot-stocks-grid"></div>
             </section>
 
             <section id="metrics" class="metrics-grid" aria-label="核心指标"></section>
@@ -817,9 +1165,117 @@ _PAGE_HTML = """
             "bollinger": { name: "布林带突破", desc: "价格跌破下轨买入，突破上轨卖出。基于波动率的均值回归策略。" },
         };
 
+        let symbolLookupTimer = null;
+        let selectedStockName = null;
+        let currentDataSource = '-';
+        let currentPriceSource = '自动 · 历史首日收盘价';
+        window.lastMetrics = {};
+
         document.getElementById('strategy').addEventListener('change', function() {
-            renderInsights();
+            renderInsights(window.lastMetrics || {});
         });
+
+        function formatTurnover(value) {
+            const num = Number(value || 0);
+            if (num >= 100000000) return (num / 100000000).toFixed(2) + '亿';
+            if (num >= 10000) return (num / 10000).toFixed(2) + '万';
+            return num.toFixed(0);
+        }
+
+        function scheduleSymbolLookup() {
+            clearTimeout(symbolLookupTimer);
+            symbolLookupTimer = setTimeout(lookupSymbol, 350);
+        }
+
+        async function lookupSymbol() {
+            const symbol = document.getElementById('symbol').value;
+            if (!symbol.trim()) return;
+
+            try {
+                const resp = await fetch(`/api/stock/lookup?symbol=${encodeURIComponent(symbol)}`);
+                const data = await resp.json();
+                selectedStockName = data.name;
+                document.getElementById('symbol').value = data.symbol;
+                document.getElementById('symbolIdentity').textContent =
+                    data.name ? `${data.name} · ${data.symbol}` : `未匹配名称 · ${data.symbol}`;
+            } catch (e) {
+                selectedStockName = null;
+                document.getElementById('symbolIdentity').textContent = `识别失败 · ${symbol}`;
+            }
+            renderInsights(window.lastMetrics || {});
+        }
+
+        async function loadHotStocks() {
+            const source = document.getElementById('hotStocksSource');
+            source.textContent = '加载中';
+            try {
+                const resp = await fetch('/api/hot-stocks?limit=10');
+                const data = await resp.json();
+                source.textContent = data.source === 'realtime' ? '实时成交额榜' : '备用热门池';
+                renderHotStocks(data.items || []);
+            } catch (e) {
+                source.textContent = '加载失败';
+                document.getElementById('hotStocks').innerHTML =
+                    '<div class="data-note">热门股加载失败，请稍后刷新页面。</div>';
+            }
+        }
+
+        function renderHotStocks(items) {
+            const container = document.getElementById('hotStocks');
+            container.innerHTML = '';
+
+            items.forEach(item => {
+                const card = document.createElement('button');
+                card.type = 'button';
+                card.className = 'hot-stock-card';
+                card.dataset.symbol = item.symbol;
+                card.onclick = () => selectHotStock(item);
+                const cls = Number(item.change_pct || 0) >= 0 ? 'positive' : 'negative';
+                card.innerHTML = `
+                    <span class="stock-main">${item.name}<small>${item.symbol}</small></span>
+                    <span class="stock-meta">
+                        <strong class="stock-price">¥${item.latest}</strong>
+                        <span class="stock-change ${cls}">${item.change_pct}%</span>
+                        <small>成交额 ${formatTurnover(item.turnover)}</small>
+                    </span>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        function selectHotStock(item) {
+            selectedStockName = item.name;
+            document.getElementById('symbol').value = item.symbol;
+            document.getElementById('symbolIdentity').textContent = `${item.name} · ${item.symbol}`;
+            document.querySelectorAll('.hot-stock-card').forEach(card => {
+                card.classList.toggle('active', card.dataset.symbol === item.symbol);
+            });
+            renderInsights(window.lastMetrics || {});
+        }
+
+        function toggleManualPrice() {
+            const enabled = document.getElementById('manualPriceToggle').checked;
+            document.getElementById('price').disabled = !enabled;
+            currentPriceSource = enabled ? '手动覆盖' : '自动 · 历史首日收盘价';
+            document.getElementById('priceSource').textContent = currentPriceSource;
+            renderInsights(window.lastMetrics || {});
+        }
+
+        function describePriceSource(source, startPrice) {
+            const price = startPrice ? ` · ¥${startPrice}` : '';
+            if (source === 'historical_first_close') return `自动 · 历史首日收盘价${price}`;
+            if (source === 'manual_override') return `手动覆盖${price}`;
+            if (source === 'simulated_default') return `模拟默认${price}`;
+            if (source === 'demo_seed_price') return `演示数据${price}`;
+            return `自动${price}`;
+        }
+
+        function describeDataSource(source) {
+            if (source === 'historical') return '真实历史行情';
+            if (source === 'simulated_fallback') return '模拟 fallback';
+            if (source === 'simulated_demo') return '演示模拟数据';
+            return source || '-';
+        }
 
         function renderChart(chartSpec) {
             const container = document.getElementById('chart');
@@ -909,8 +1365,8 @@ _PAGE_HTML = """
             const info = STRATEGY_INFO[strategyId] || STRATEGY_INFO.ma_cross;
             const symbol = document.getElementById('symbol').value || '-';
             const days = document.getElementById('days').value || '-';
-            const price = document.getElementById('price').value || '-';
             const cash = document.getElementById('cash').value || '-';
+            const identity = selectedStockName ? `${selectedStockName} · ${symbol}` : symbol;
             const maxDrawdown = metrics['最大回撤'] || '-';
             const annualReturn = metrics['年化收益率'] || '-';
             const tradeCount = metrics['总交易次数'] || '-';
@@ -940,9 +1396,10 @@ _PAGE_HTML = """
                     <section class="insight-section">
                         <h3>参数摘要</h3>
                         <ul class="insight-list">
-                            <li><span>标的代码</span><strong>${symbol}</strong></li>
+                            <li><span>标的</span><strong>${identity}</strong></li>
                             <li><span>样本长度</span><strong>${days} 天</strong></li>
-                            <li><span>起始价格</span><strong>¥${price}</strong></li>
+                            <li><span>数据来源</span><strong>${describeDataSource(currentDataSource)}</strong></li>
+                            <li><span>起始价来源</span><strong>${currentPriceSource}</strong></li>
                             <li><span>初始资金</span><strong>¥${cash}</strong></li>
                         </ul>
                     </section>
@@ -958,8 +1415,8 @@ _PAGE_HTML = """
             const strategy = document.getElementById('strategy').value;
             const symbol = document.getElementById('symbol').value;
             const days = document.getElementById('days').value;
-            const price = document.getElementById('price').value;
             const cash = document.getElementById('cash').value;
+            const manualPrice = document.getElementById('manualPriceToggle').checked;
 
             document.getElementById('chart').innerHTML = `
                 <div class="chart-header">
@@ -972,13 +1429,25 @@ _PAGE_HTML = """
                 <div class="chart-loading">运行回测中...</div>
             `;
             document.getElementById('metrics').innerHTML = '';
-            renderInsights();
+            renderInsights(window.lastMetrics || {});
 
             try {
-                const resp = await fetch(
-                    `/api/backtest?strategy_id=${strategy}&symbol=${symbol}&days=${days}&start_price=${price}&cash=${cash}&seed=42`
-                );
+                const params = new URLSearchParams({
+                    strategy_id: strategy,
+                    symbol,
+                    days,
+                    cash,
+                    seed: '42',
+                    auto_price: String(!manualPrice),
+                    use_real_data: 'true',
+                });
+                if (manualPrice) params.set('start_price', document.getElementById('price').value);
+
+                const resp = await fetch(`/api/backtest?${params.toString()}`);
                 const data = await resp.json();
+                currentDataSource = data.data_source || '-';
+                currentPriceSource = describePriceSource(data.price_source, data.start_price);
+                document.getElementById('priceSource').textContent = currentPriceSource;
 
                 if (data.errors && data.errors.length > 0) {
                     document.getElementById('chart').innerHTML = `
@@ -994,6 +1463,7 @@ _PAGE_HTML = """
                     return;
                 }
 
+                window.lastMetrics = data.metrics || {};
                 renderMetrics(data.metrics);
                 renderInsights(data.metrics);
                 renderChart(data.chart);
@@ -1008,14 +1478,20 @@ _PAGE_HTML = """
                     </div>
                     <div class="chart-loading error-text">${e.message}</div>
                 `;
-                renderInsights();
+                renderInsights(window.lastMetrics || {});
             }
         }
 
         window.addEventListener('DOMContentLoaded', async () => {
             renderInsights();
+            await loadHotStocks();
+            await lookupSymbol();
             const resp = await fetch('/api/backtest/demo');
             const data = await resp.json();
+            window.lastMetrics = data.metrics || {};
+            currentDataSource = data.data_source || '-';
+            currentPriceSource = describePriceSource(data.price_source, data.start_price);
+            document.getElementById('priceSource').textContent = currentPriceSource;
             renderMetrics(data.metrics);
             renderInsights(data.metrics);
             renderChart(data.chart);
