@@ -5,13 +5,17 @@
 ## 快速开始
 
 ```bash
-# 1. 激活虚拟环境
+# 1. 激活虚拟环境并安装依赖
 source .venv/bin/activate
+pip install -r requirements.txt
 
-# 2. 运行交互式回测
+# 2. 运行测试
+PYTHONIOENCODING=utf-8 python tests/run_all.py
+
+# 3. 运行交互式回测
 python run.py
 
-# 3. 启动 Web 可视化界面
+# 4. 启动 Web 可视化界面
 uvicorn web.app:app --reload
 # 访问 http://localhost:8000
 ```
@@ -43,6 +47,10 @@ quant-backtest/
 | 策略 | 文件 | 说明 |
 |------|------|------|
 | 双均线交叉 | `strategies/ma_cross.py` | MA5 上穿 MA20 买入，下穿卖出 |
+| RSI 反转 | `strategies/rsi.py` | RSI 低于阈值买入，高于阈值卖出 |
+| MACD 趋势 | `strategies/macd.py` | MACD 金叉买入，死叉卖出 |
+| 布林带均值回归 | `strategies/bollinger.py` | 跌破下轨买入，突破上轨卖出 |
+| 定投 | `strategies/dca.py` | 每月第一个交易日生成买入信号 |
 
 ## 数据来源
 
@@ -55,11 +63,11 @@ quant-backtest/
 
 - **Python 3.9+** — 核心语言
 - **pandas / numpy** — 数据处理
-- **backtrader** — 回测框架
+- **自研回测引擎** — 交易撮合、滑点、税费、T+1、涨跌停限制
 - **akshare** — A 股行情数据
+- **yfinance** — 美股 / 港股行情数据
 - **FastAPI** — Web 服务
 - **Plotly** — 交互式图表
-- **Streamlit** — 数据看板（备选）
 
 ## 核心指标
 

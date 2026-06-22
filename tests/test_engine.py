@@ -9,7 +9,12 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 import pandas as pd
 import numpy as np
 from backtest.engine import run_backtest, simulate_trade
+from backtest.metrics import calculate_metrics
 from strategies.base import Strategy
+from strategies.dca import DCAStrategy
+from strategies.ma_cross import MovingAverageCrossStrategy
+from strategies.rsi import RSIStrategy
+from strategies.bollinger import BollingerBandsStrategy
 
 
 class TestStrategy(Strategy):
@@ -26,6 +31,38 @@ class TestStrategy(Strategy):
             df.iloc[self.buy_day, df.columns.get_loc("trade_signal")] = 1
         if len(df) > self.sell_day:
             df.iloc[self.sell_day, df.columns.get_loc("trade_signal")] = -1
+        return df
+
+
+class AmountBuyStrategy(Strategy):
+    """按指定日期和金额买入的测试策略"""
+    def __init__(self, buy_days, trade_amount):
+        super().__init__("AmountBuy")
+        self.buy_days = buy_days
+        self.trade_amount = trade_amount
+
+    def generate_signals(self, data):
+        df = data.copy()
+        df["trade_signal"] = 0
+        df["trade_amount"] = np.nan
+        for day in self.buy_days:
+            if len(df) > day:
+                df.iloc[day, df.columns.get_loc("trade_signal")] = 1
+                df.iloc[day, df.columns.get_loc("trade_amount")] = self.trade_amount
+        return df
+
+
+class PartialSellStrategy(Strategy):
+    """先买入固定金额，再按比例卖出的测试策略"""
+    def generate_signals(self, data):
+        df = data.copy()
+        df["trade_signal"] = 0
+        df["trade_amount"] = np.nan
+        df["sell_pct"] = np.nan
+        df.iloc[1, df.columns.get_loc("trade_signal")] = 1
+        df.iloc[1, df.columns.get_loc("trade_amount")] = 41000
+        df.iloc[5, df.columns.get_loc("trade_signal")] = -1
+        df.iloc[5, df.columns.get_loc("sell_pct")] = 0.5
         return df
 
 
@@ -96,6 +133,143 @@ def test_backtest_basic():
     assert "最大回撤" in result.metrics
     assert "夏普比率" in result.metrics
     print("✅ test_backtest_basic PASS")
+
+
+def test_backtest_does_not_overspend_cash_on_buy():
+    """测试买入时应把滑点和费用计入可买股数，现金不能为负"""
+    data = make_test_data(days=10, start_price=100, seed=1)
+    data["close"] = 100.0
+    data["open"] = 100.0
+    data["high"] = 101.0
+    data["low"] = 99.0
+
+    strategy = TestStrategy(buy_day=5, sell_day=50)
+    result = run_backtest(data, strategy, initial_capital=10000, enable_limit=False)
+
+    assert result.daily_positions["cash"].min() >= 0
+    if result.trade_log:
+        assert result.trade_log[0].cost <= 10000
+    print("✅ test_backtest_does_not_overspend_cash_on_buy PASS")
+
+
+def test_metrics_counts_buy_sell_trade_types():
+    """测试引擎传入 buy/sell 类型时，交易统计应正确识别买卖和胜率"""
+    dates = pd.date_range("2023-01-01", periods=5, freq="D")
+    equity_curve = pd.Series([100000, 100000, 101000, 101000, 101000], index=dates)
+    metrics = calculate_metrics(
+        equity_curve,
+        trade_log=[
+            {"type": "buy", "price": 100, "shares": 100, "cost": 10000},
+            {"type": "sell", "price": 110, "shares": 100, "revenue": 11000},
+        ],
+    )
+
+    assert metrics["总交易次数"] == 2
+    assert metrics["买入次数"] == 1
+    assert metrics["卖出次数"] == 1
+    assert metrics["胜率"] == 1.0
+    print("✅ test_metrics_counts_buy_sell_trade_types PASS")
+
+
+def test_dca_uses_fixed_trade_amount_and_accumulates_position():
+    """测试定投策略按固定金额买入，并在多次买入后累积持仓"""
+    data = make_test_data(days=45, start_price=10, seed=3)
+    data["close"] = 10.0
+    data["open"] = 10.0
+    data["high"] = 10.1
+    data["low"] = 9.9
+
+    strategy = DCAStrategy(monthly_invest=1200)
+    result = run_backtest(data, strategy, initial_capital=10000, enable_limit=False)
+    buys = [t for t in result.trade_log if t.direction == "buy"]
+
+    assert len(buys) >= 2
+    assert all(t.cost <= 1200 for t in buys)
+    assert result.daily_positions["shares"].max() >= 200
+    print("✅ test_dca_uses_fixed_trade_amount_and_accumulates_position PASS")
+
+
+def test_additional_buy_accumulates_existing_position():
+    """测试额外买入应增加持仓，而不是覆盖已有持仓"""
+    data = make_test_data(days=10, start_price=100, seed=4)
+    data["close"] = 100.0
+    data["open"] = 100.0
+    data["high"] = 101.0
+    data["low"] = 99.0
+
+    result = run_backtest(
+        data,
+        AmountBuyStrategy(buy_days=[1, 3], trade_amount=12000),
+        initial_capital=30000,
+        enable_limit=False,
+    )
+
+    assert len([t for t in result.trade_log if t.direction == "buy"]) == 2
+    assert result.daily_positions["shares"].iloc[-1] == 200
+    print("✅ test_additional_buy_accumulates_existing_position PASS")
+
+
+def test_sell_pct_sells_partial_position():
+    """测试 sell_pct 可以按比例卖出持仓，默认整仓卖出行为不受影响"""
+    data = make_test_data(days=10, start_price=100, seed=5)
+    data["close"] = 100.0
+    data["open"] = 100.0
+    data["high"] = 101.0
+    data["low"] = 99.0
+
+    result = run_backtest(data, PartialSellStrategy(), initial_capital=50000, enable_limit=False)
+    sells = [t for t in result.trade_log if t.direction == "sell"]
+
+    assert len(sells) == 1
+    assert sells[0].shares == 200
+    assert result.daily_positions["shares"].iloc[-1] == 200
+    print("✅ test_sell_pct_sells_partial_position PASS")
+
+
+def test_rsi_emits_signal_only_on_threshold_crossing():
+    """测试 RSI 连续超卖时只在首次跌破阈值当天发买入信号"""
+    data = make_test_data(days=30, start_price=100, seed=6)
+    data["close"] = np.linspace(100, 70, len(data))
+    data["open"] = data["close"]
+    data["high"] = data["close"] + 1
+    data["low"] = data["close"] - 1
+
+    signals = RSIStrategy(period=5, oversold=30, overbought=70).generate_signals(data)
+
+    assert (signals["trade_signal"] == 1).sum() == 1
+    print("✅ test_rsi_emits_signal_only_on_threshold_crossing PASS")
+
+
+def test_bollinger_emits_signal_only_on_band_crossing():
+    """测试布林带连续在下轨外时只在首次跌破当天发买入信号"""
+    data = make_test_data(days=12, start_price=100, seed=7)
+    closes = [100, 100, 100, 100, 100, 90, 90, 90, 90, 90, 90, 90]
+    data["close"] = closes
+    data["open"] = data["close"]
+    data["high"] = data["close"] + 1
+    data["low"] = data["close"] - 1
+
+    signals = BollingerBandsStrategy(period=5, std_dev=1.0).generate_signals(data)
+
+    assert (signals["trade_signal"] == 1).sum() == 1
+    print("✅ test_bollinger_emits_signal_only_on_band_crossing PASS")
+
+
+def test_moving_average_strategy_validates_windows():
+    """测试双均线策略拒绝无效窗口参数"""
+    try:
+        MovingAverageCrossStrategy(short_window=20, long_window=5)
+        assert False, "short_window >= long_window should raise ValueError"
+    except ValueError:
+        pass
+
+    try:
+        MovingAverageCrossStrategy(short_window=0, long_window=20)
+        assert False, "non-positive windows should raise ValueError"
+    except ValueError:
+        pass
+
+    print("✅ test_moving_average_strategy_validates_windows PASS")
 
 
 def test_backtest_no_signal():
@@ -176,16 +350,20 @@ def test_summary_format():
     print("✅ test_summary_format PASS")
 
 
-if __name__ == "__main__":
-    print("=" * 50)
-    print("🧪 回测引擎测试套件")
-    print("=" * 50)
-
+def run_tests():
     tests = [
         test_simulate_trade,
         test_sell_stamp_tax,
         test_min_commission,
         test_backtest_basic,
+        test_backtest_does_not_overspend_cash_on_buy,
+        test_metrics_counts_buy_sell_trade_types,
+        test_dca_uses_fixed_trade_amount_and_accumulates_position,
+        test_additional_buy_accumulates_existing_position,
+        test_sell_pct_sells_partial_position,
+        test_rsi_emits_signal_only_on_threshold_crossing,
+        test_bollinger_emits_signal_only_on_band_crossing,
+        test_moving_average_strategy_validates_windows,
         test_backtest_no_signal,
         test_backtest_limit_price,
         test_backtest_t1,
@@ -206,3 +384,12 @@ if __name__ == "__main__":
     print(f"\n{'=' * 50}")
     print(f"结果: {passed} 通过, {failed} 失败 / {len(tests)} 总")
     print(f"{'=' * 50}")
+    return passed, failed
+
+
+if __name__ == "__main__":
+    print("=" * 50)
+    print("🧪 回测引擎测试套件")
+    print("=" * 50)
+    passed, failed = run_tests()
+    sys.exit(1 if failed else 0)

@@ -43,6 +43,67 @@ STRATEGY_MAP = {
 }
 
 
+def build_compare_payload(strategy_ids: list, data: pd.DataFrame, initial_capital: float = 100000) -> dict:
+    """运行多策略对比并返回指标、净值曲线和图表 HTML。"""
+    valid_ids = [sid for sid in strategy_ids if sid in STRATEGY_MAP]
+    if not valid_ids:
+        raise ValueError("没有有效的策略ID")
+
+    results = []
+    fig = go.Figure()
+
+    for sid in valid_ids:
+        strategy = STRATEGY_MAP[sid]()
+        result = run_backtest(data, strategy, initial_capital=initial_capital)
+        name = STRATEGY_DESCRIPTIONS[sid]["name"]
+        curve = [
+            {"date": idx.strftime("%Y-%m-%d"), "value": round(float(value), 2)}
+            for idx, value in result.equity_curve.items()
+        ]
+
+        results.append({
+            "id": sid,
+            "name": name,
+            "metrics": result.summary(),
+            "equity_curve": curve,
+            "trade_count": len(result.trade_log),
+            "errors": result.errors,
+        })
+
+        fig.add_trace(
+            go.Scatter(
+                x=[p["date"] for p in curve],
+                y=[p["value"] for p in curve],
+                mode="lines",
+                name=name,
+            )
+        )
+
+    buy_hold = data["close"].values / data["close"].iloc[0] * initial_capital
+    fig.add_trace(
+        go.Scatter(
+            x=data["date"],
+            y=buy_hold,
+            mode="lines",
+            name="买入持有",
+            line=dict(color="#888", width=1.5, dash="dash"),
+        )
+    )
+    fig.update_layout(
+        template="plotly_dark",
+        height=520,
+        title="策略净值对比",
+        hovermode="x unified",
+        margin=dict(l=40, r=20, t=50, b=40),
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+
+    return {
+        "results": results,
+        "chart": fig.to_html(include_plotlyjs=True, full_html=False),
+    }
+
+
 def build_chart(data: pd.DataFrame, result) -> str:
     """
     生成完整的回测图表 HTML
@@ -271,31 +332,7 @@ async def compare_strategies(
         raise HTTPException(400, "没有有效的策略ID")
 
     data = generate_stock_data(days=days, seed=seed)
-
-    results = []
-    for sid in ids:
-        cls = STRATEGY_MAP[sid]
-        strategy = cls()
-        result = run_backtest(data, strategy)
-        results.append({
-            "id": sid,
-            "name": STRATEGY_DESCRIPTIONS[sid]["name"],
-            "metrics": result.summary(),
-        })
-
-    # 对比图
-    fig = go.Figure()
-    for r in results:
-        # 这里简化，实际应该重新跑一次拿 equity_curve
-        pass
-
-    fig.update_layout(template="plotly_dark", height=500,
-                      title="策略净值对比")
-    fig.add_hline(y=100000, line_dash="dash", line_color="gray")
-
-    return {
-        "results": results,
-    }
+    return build_compare_payload(ids, data)
 
 
 _PAGE_HTML = """

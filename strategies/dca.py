@@ -25,9 +25,11 @@ class DCAStrategy(Strategy):
         # 标记每月第一个交易日
         df["year_month"] = df["date"].dt.to_period("M")
         df["trade_signal"] = 0
+        df["trade_amount"] = 0.0
 
         # 每个月的第一个交易日设为买入信号
         first_trade_dates = df.groupby("year_month")["date"].transform("first")
         df.loc[df["date"] == first_trade_dates, "trade_signal"] = 1
+        df.loc[df["date"] == first_trade_dates, "trade_amount"] = self.monthly_invest
 
         return df.drop(columns=["year_month"])

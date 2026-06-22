@@ -103,8 +103,8 @@ def calculate_metrics(equity_curve: pd.Series,
     if trade_log:
         metrics["总交易次数"] = len(trade_log)
         
-        buys = [t for t in trade_log if t.get("type") == "买入" or t.get("type") == "sell"]
-        sells = [t for t in trade_log if t.get("type") == "卖出"]
+        buys = [t for t in trade_log if t.get("type") in ("buy", "买入")]
+        sells = [t for t in trade_log if t.get("type") in ("sell", "卖出")]
         
         metrics["买入次数"] = len(buys)
         metrics["卖出次数"] = len(sells)

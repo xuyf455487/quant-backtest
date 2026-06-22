@@ -194,10 +194,20 @@ def run_backtest(
 
         # === 卖出信号 ===
         if signal == -1 and position > 0 and can_sell_today:
+            sell_pct = row.get("sell_pct", 1.0)
+            if pd.isna(sell_pct) or sell_pct <= 0:
+                sell_pct = 1.0
+            sell_pct = min(float(sell_pct), 1.0)
+            shares_to_sell = position if sell_pct >= 1.0 else int(position * sell_pct / MIN_TRADE_UNIT) * MIN_TRADE_UNIT
+
+            if shares_to_sell < MIN_TRADE_UNIT:
+                shares_to_sell = 0
+
+        if signal == -1 and position > 0 and can_sell_today and shares_to_sell > 0:
             trade = simulate_trade(
                 direction="sell",
                 price=price,
-                shares=position,
+                shares=shares_to_sell,
                 date=date,
                 slippage_pct=slippage_pct,
                 commission_pct=commission_pct,
@@ -205,13 +215,16 @@ def run_backtest(
                 transfer_fee_pct=transfer_fee_pct,
             )
             cash += trade.cost
-            position = 0
+            position -= trade.shares
             result.trade_log.append(trade)
 
         # === 买入信号 ===
         if signal == 1 and can_buy_today:
             # 计算可用资金和最大可买股数
             max_buy_cash = cash * max_position_pct
+            trade_amount = row.get("trade_amount", np.nan)
+            if not pd.isna(trade_amount) and trade_amount > 0:
+                max_buy_cash = min(max_buy_cash, float(trade_amount))
             max_shares = int(max_buy_cash / price / MIN_TRADE_UNIT) * MIN_TRADE_UNIT
 
             if max_shares >= MIN_TRADE_UNIT:
@@ -225,10 +238,25 @@ def run_backtest(
                     stamp_tax_pct=stamp_tax_pct,
                     transfer_fee_pct=transfer_fee_pct,
                 )
-                cash -= trade.cost
-                position = max_shares
-                last_buy_date = date
-                result.trade_log.append(trade)
+                while trade.cost > max_buy_cash and max_shares >= MIN_TRADE_UNIT:
+                    max_shares -= MIN_TRADE_UNIT
+                    if max_shares < MIN_TRADE_UNIT:
+                        break
+                    trade = simulate_trade(
+                        direction="buy",
+                        price=price,
+                        shares=max_shares,
+                        date=date,
+                        slippage_pct=slippage_pct,
+                        commission_pct=commission_pct,
+                        stamp_tax_pct=stamp_tax_pct,
+                        transfer_fee_pct=transfer_fee_pct,
+                    )
+                if max_shares >= MIN_TRADE_UNIT:
+                    cash -= trade.cost
+                    position += max_shares
+                    last_buy_date = date
+                    result.trade_log.append(trade)
 
         # 记录每日资产
         total_value = cash + position * price

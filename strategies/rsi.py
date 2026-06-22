@@ -34,7 +34,11 @@ class RSIStrategy(Strategy):
 
         # 信号
         df["trade_signal"] = 0
-        df.loc[df["rsi"] < self.oversold, "trade_signal"] = 1
-        df.loc[df["rsi"] > self.overbought, "trade_signal"] = -1
+        was_oversold = df["rsi"].shift(1) < self.oversold
+        is_oversold = df["rsi"] < self.oversold
+        was_overbought = df["rsi"].shift(1) > self.overbought
+        is_overbought = df["rsi"] > self.overbought
+        df.loc[is_oversold & ~was_oversold.fillna(False), "trade_signal"] = 1
+        df.loc[is_overbought & ~was_overbought.fillna(False), "trade_signal"] = -1
 
         return df

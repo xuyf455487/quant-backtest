@@ -17,6 +17,10 @@ class MovingAverageCrossStrategy(Strategy):
     """
 
     def __init__(self, short_window: int = 5, long_window: int = 20, name: str = None):
+        if short_window <= 0 or long_window <= 0:
+            raise ValueError("short_window and long_window must be positive")
+        if short_window >= long_window:
+            raise ValueError("short_window must be smaller than long_window")
         super().__init__(name)
         self.short_window = short_window
         self.long_window = long_window

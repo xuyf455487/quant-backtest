@@ -29,6 +29,18 @@ WATCHLIST_PATH = Path(__file__).parent / "watchlist.yaml"
 ALERT_THRESHOLD = -3.0   # 单日跌超3%提醒
 
 
+def is_trading_time(now: datetime) -> bool:
+    """判断当前时间是否处于 A 股连续竞价时段。"""
+    if now.weekday() >= 5:
+        return False
+
+    hour = now.hour
+    minute = now.minute
+    in_morning = (hour == 9 and minute >= 30) or hour == 10 or (hour == 11 and minute < 30)
+    in_afternoon = hour == 13 or hour == 14
+    return in_morning or in_afternoon
+
+
 def load_watchlist() -> list:
     with open(WATCHLIST_PATH, encoding="utf-8") as f:
         data = yaml.safe_load(f)
@@ -43,23 +55,12 @@ def load_watchlist() -> list:
 def main():
     now = datetime.now()
     # 非交易时段直接静默退出
-    weekday = now.weekday()
-    hour = now.hour
-    minute = now.minute
-    # 周末 or 非交易时间
-    if weekday >= 5:
+    if not is_trading_time(now):
         return
-    if hour < 9 or hour >= 15 or (hour == 9 and minute < 30) or (hour == 11 and minute >= 30) or (hour == 13 and minute < 0):
-        # 午休 11:30-13:00 也跳过
-        if hour == 11 and minute >= 30:
-            return
-        if hour < 13 and hour >= 12:
-            return
-        if hour < 9 or hour >= 15:
-            return
 
     items = load_watchlist()
     alerts = []
+    asset_results = []
 
     for item in items:
         symbol = str(item["code"])
@@ -73,6 +74,7 @@ def main():
 
         change = calc_change(df)
         close = df["close"].iloc[-1]
+        asset_results.append({"symbol": symbol, "name": name, "close": close})
 
         # 1. 单日暴跌
         if change <= ALERT_THRESHOLD:
@@ -91,7 +93,7 @@ def main():
             alerts.append(f"🟢 异动: {name} ({symbol}) 今日猛涨 {change:.1f}%，现价 ¥{close:.2f}")
 
     # 价格提醒
-    price_alerts = check_alerts([])  # 简单模式：只依赖 alerts.yaml
+    price_alerts = check_alerts(asset_results)
 
     if not alerts and not price_alerts:
         return  # 静默退出，无输出

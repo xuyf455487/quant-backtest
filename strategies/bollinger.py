@@ -32,7 +32,11 @@ class BollingerBandsStrategy(Strategy):
 
         # 信号
         df["trade_signal"] = 0
-        df.loc[df["close"] < df["lower"], "trade_signal"] = 1    # 跌破下轨买入
-        df.loc[df["close"] > df["upper"], "trade_signal"] = -1   # 突破上轨卖出
+        was_below_lower = df["close"].shift(1) < df["lower"].shift(1)
+        is_below_lower = df["close"] < df["lower"]
+        was_above_upper = df["close"].shift(1) > df["upper"].shift(1)
+        is_above_upper = df["close"] > df["upper"]
+        df.loc[is_below_lower & ~was_below_lower.fillna(False), "trade_signal"] = 1    # 跌破下轨买入
+        df.loc[is_above_upper & ~was_above_upper.fillna(False), "trade_signal"] = -1   # 突破上轨卖出
 
         return df
