@@ -292,16 +292,22 @@ def test_backtest_no_signal():
 
 def test_backtest_limit_price():
     """测试涨跌停限制"""
-    data = make_test_data(days=20)
-    # 让某天的价格等于涨停价
-    data.loc[5, "close"] = data.loc[4, "close"] * 1.098  # 接近涨停
+    data = make_test_data(days=20, start_price=100, seed=8)
+    data["close"] = 100.0
+    data["open"] = 100.0
+    data["high"] = 101.0
+    data["low"] = 99.0
+    # 第5天触及涨停，买入信号应被限制拦截。
+    data.loc[5, "close"] = data.loc[4, "close"] * 1.10
+    data.loc[5, "open"] = data.loc[5, "close"]
+    data.loc[5, "high"] = data.loc[5, "close"]
+    data.loc[5, "low"] = data.loc[5, "close"]
 
-    strategy = TestStrategy(buy_day=5, sell_day=15)
+    strategy = TestStrategy(buy_day=5, sell_day=50)
     result = run_backtest(data, strategy, initial_capital=100000, enable_limit=True)
 
-    # 涨停日应该买不进
-    if len(result.trade_log) >= 1 and result.trade_log[0].date == data.iloc[5]["date"]:
-        print("  注意: 涨停日买入了（有容差）")
+    assert len(result.trade_log) == 0
+    assert result.daily_positions["shares"].iloc[-1] == 0
 
     print("✅ test_backtest_limit_price PASS")
 
@@ -313,12 +319,37 @@ def test_backtest_t1():
             df = data.copy()
             df["trade_signal"] = 0
             df.iloc[5, df.columns.get_loc("trade_signal")] = 1   # 买入
-            df.iloc[5, df.columns.get_loc("trade_signal")] = -1  # 同一天卖出（本来应该用diff，这个策略有问题）
+            df.iloc[6, df.columns.get_loc("trade_signal")] = -1  # 同一交易日卖出
             return df
 
-    data = make_test_data(days=30)
-    # 测试正常的T+1
-    print("✅ test_backtest_t1 PASS (手动检查)")
+    data = make_test_data(days=30, start_price=100, seed=9)
+    data["close"] = 100.0
+    data["open"] = 100.0
+    data["high"] = 101.0
+    data["low"] = 99.0
+    data.loc[6, "date"] = data.loc[5, "date"]
+
+    with_t1 = run_backtest(
+        data,
+        BuySellSameDay(),
+        initial_capital=50000,
+        enable_limit=False,
+        enable_t1=True,
+    )
+    without_t1 = run_backtest(
+        data,
+        BuySellSameDay(),
+        initial_capital=50000,
+        enable_limit=False,
+        enable_t1=False,
+    )
+
+    assert [t.direction for t in with_t1.trade_log] == ["buy"]
+    assert with_t1.daily_positions["shares"].iloc[-1] > 0
+    assert [t.direction for t in without_t1.trade_log] == ["buy", "sell"]
+    assert without_t1.daily_positions["shares"].iloc[-1] == 0
+
+    print("✅ test_backtest_t1 PASS")
 
 
 def test_metrics_completeness():
