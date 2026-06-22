@@ -27,7 +27,7 @@ from strategies.macd import MACDStrategy
 from strategies.bollinger import BollingerBandsStrategy
 
 # App 配置
-pio.templates.default = "plotly_dark"
+pio.templates.default = "plotly_white"
 
 app = FastAPI(
     title="量化回测系统",
@@ -43,8 +43,13 @@ STRATEGY_MAP = {
 }
 
 
+def _chart_json(fig: go.Figure) -> str:
+    """Serialize Plotly figures as data so the browser can render them explicitly."""
+    return pio.to_json(fig, validate=False)
+
+
 def build_compare_payload(strategy_ids: list, data: pd.DataFrame, initial_capital: float = 100000) -> dict:
-    """运行多策略对比并返回指标、净值曲线和图表 HTML。"""
+    """运行多策略对比并返回指标、净值曲线和图表 JSON。"""
     valid_ids = [sid for sid in strategy_ids if sid in STRATEGY_MAP]
     if not valid_ids:
         raise ValueError("没有有效的策略ID")
@@ -90,23 +95,26 @@ def build_compare_payload(strategy_ids: list, data: pd.DataFrame, initial_capita
         )
     )
     fig.update_layout(
-        template="plotly_dark",
+        template="plotly_white",
         height=520,
         title="策略净值对比",
         hovermode="x unified",
         margin=dict(l=40, r=20, t=50, b=40),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#ffffff",
+        font=dict(color="#111827"),
     )
 
     return {
         "results": results,
-        "chart": fig.to_html(include_plotlyjs=True, full_html=False),
+        "chart": _chart_json(fig),
     }
 
 
 def build_chart(data: pd.DataFrame, result) -> str:
     """
-    生成完整的回测图表 HTML
+    生成完整的回测图表 JSON
 
     包含:
     1. K线 + 均线 + 买卖点 + 资产曲线
@@ -235,13 +243,16 @@ def build_chart(data: pd.DataFrame, result) -> str:
 
     # 布局
     fig.update_layout(
-        template="plotly_dark",
-        height=900,
+        template="plotly_white",
+        height=680,
         dragmode="zoom",
         hovermode="x unified",
         margin=dict(l=40, r=20, t=40, b=40),
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
         xaxis3_rangeslider_visible=False,
+        paper_bgcolor="rgba(0,0,0,0)",
+        plot_bgcolor="#ffffff",
+        font=dict(color="#111827"),
     )
 
     fig.update_xaxes(title_text="日期", row=3, col=1)
@@ -249,7 +260,7 @@ def build_chart(data: pd.DataFrame, result) -> str:
     fig.update_yaxes(title_text="成交量", row=2, col=1)
     fig.update_yaxes(title_text="资产(¥)", row=3, col=1)
 
-    return fig.to_html(include_plotlyjs=True, full_html=False)
+    return _chart_json(fig)
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -341,187 +352,461 @@ _PAGE_HTML = """
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>量化回测系统</title>
+    <title>Quant Research Workbench</title>
     <script src="https://cdn.plot.ly/plotly-2.35.2.min.js"></script>
     <style>
+        :root {
+            --bg: #f4f7fb;
+            --panel: #ffffff;
+            --panel-muted: #f8fafc;
+            --line: #dbe3ef;
+            --line-soft: #e8edf5;
+            --text: #111827;
+            --muted: #64748b;
+            --muted-2: #94a3b8;
+            --blue: #1d4ed8;
+            --blue-soft: #dbeafe;
+            --green: #0f766e;
+            --green-soft: #ccfbf1;
+            --red: #dc2626;
+            --red-soft: #fee2e2;
+            --amber: #b45309;
+            --amber-soft: #fef3c7;
+            --radius: 10px;
+            --shadow: 0 10px 30px rgba(15, 23, 42, 0.06);
+        }
+
         * { margin: 0; padding: 0; box-sizing: border-box; }
+
         body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-            background: #0f0f1a;
-            color: #e0e0e0;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif;
+            background: var(--bg);
+            color: var(--text);
             min-height: 100vh;
         }
-        .header {
-            background: linear-gradient(135deg, #1a1a3e 0%, #0f0f1a 100%);
-            padding: 20px 40px;
-            border-bottom: 1px solid #2a2a4a;
+
+        .app-shell { min-height: 100vh; }
+
+        .app-bar {
+            min-height: 72px;
+            background: var(--panel);
+            border-bottom: 1px solid var(--line);
+            padding: 14px 28px;
             display: flex;
             align-items: center;
             justify-content: space-between;
+            gap: 24px;
         }
-        .header h1 { font-size: 22px; color: #FFD700; }
-        .header span { color: #888; font-size: 13px; }
-        .container { max-width: 1400px; margin: 0 auto; padding: 20px; }
-        
-        .controls {
-            background: #1a1a3e;
-            border: 1px solid #2a2a4a;
-            border-radius: 12px;
-            padding: 24px;
-            margin-bottom: 20px;
+
+        .eyebrow {
+            color: var(--blue);
+            font-size: 11px;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.08em;
+            margin-bottom: 3px;
+        }
+
+        .app-bar h1 {
+            font-size: 20px;
+            line-height: 1.2;
+            font-weight: 750;
+            letter-spacing: 0;
+        }
+
+        .app-bar p {
+            color: var(--muted);
+            font-size: 12px;
+            margin-top: 4px;
+        }
+
+        .system-status {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: var(--muted);
+            font-size: 12px;
+            white-space: nowrap;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 999px;
+            background: var(--green);
+            box-shadow: 0 0 0 3px var(--green-soft);
+        }
+
+        .workbench {
+            max-width: 1480px;
+            margin: 0 auto;
+            padding: 18px 20px 28px;
+        }
+
+        .run-strip {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 14px;
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-            gap: 16px;
+            grid-template-columns: minmax(180px, 1.25fr) minmax(150px, 1fr) minmax(120px, 0.75fr) minmax(130px, 0.8fr) minmax(150px, 0.95fr) 132px;
+            gap: 10px;
+            margin-bottom: 12px;
         }
-        .control-group { display: flex; flex-direction: column; gap: 6px; }
-        .control-group label { font-size: 12px; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
-        .control-group select,
-        .control-group input {
-            background: #0f0f1a;
-            border: 1px solid #2a2a4a;
-            color: #e0e0e0;
-            padding: 10px 12px;
+
+        .control-field {
+            display: flex;
+            flex-direction: column;
+            gap: 6px;
+        }
+
+        .control-field label {
+            font-size: 11px;
+            color: var(--muted);
+            font-weight: 650;
+        }
+
+        .control-field select,
+        .control-field input {
+            width: 100%;
+            height: 38px;
+            border: 1px solid var(--line);
             border-radius: 8px;
+            background: var(--panel-muted);
+            color: var(--text);
+            padding: 0 11px;
             font-size: 14px;
             outline: none;
-            transition: border-color 0.2s;
+            transition: border-color 0.15s, box-shadow 0.15s, background 0.15s;
         }
-        .control-group select:focus,
-        .control-group input:focus { border-color: #FFD700; }
-        .control-group select option { background: #1a1a3e; }
-        
-        .btn {
-            background: linear-gradient(135deg, #FFD700, #FFA000);
-            color: #1a1a3e;
-            border: none;
-            padding: 10px 24px;
+
+        .control-field select:focus,
+        .control-field input:focus {
+            border-color: var(--blue);
+            background: var(--panel);
+            box-shadow: 0 0 0 3px var(--blue-soft);
+        }
+
+        .btn-primary {
+            height: 38px;
+            align-self: end;
+            border: 0;
             border-radius: 8px;
-            font-size: 14px;
-            font-weight: 600;
+            background: var(--blue);
+            color: #ffffff;
+            font-weight: 750;
             cursor: pointer;
-            transition: transform 0.1s, opacity 0.2s;
-            align-self: flex-end;
+            transition: background 0.15s, transform 0.1s;
         }
-        .btn:hover { opacity: 0.9; transform: translateY(-1px); }
-        .btn:active { transform: translateY(0); }
-        .btn-secondary {
-            background: #2a2a4a;
-            color: #e0e0e0;
-        }
+
+        .btn-primary:hover { background: #1e40af; }
+        .btn-primary:active { transform: translateY(1px); }
 
         .metrics-grid {
             display: grid;
-            grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
-            gap: 12px;
-            margin-bottom: 20px;
+            grid-template-columns: repeat(6, minmax(0, 1fr));
+            gap: 10px;
+            margin-bottom: 12px;
         }
-        .metric-card {
-            background: #1a1a3e;
-            border: 1px solid #2a2a4a;
-            border-radius: 10px;
-            padding: 16px;
-            text-align: center;
-        }
-        .metric-card .label { font-size: 11px; color: #888; text-transform: uppercase; margin-bottom: 6px; }
-        .metric-card .value { font-size: 20px; font-weight: bold; }
-        .metric-card .value.positive { color: #26a69a; }
-        .metric-card .value.negative { color: #ef5350; }
-        .metric-card .value.neutral { color: #FFD700; }
 
-        .chart-container {
-            background: #1a1a3e;
-            border: 1px solid #2a2a4a;
-            border-radius: 12px;
-            padding: 16px;
+        .metric-card {
+            min-height: 74px;
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
+            padding: 13px 14px;
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+        }
+
+        .metric-label {
+            color: var(--muted);
+            font-size: 11px;
+            font-weight: 650;
+        }
+
+        .metric-value {
+            display: block;
+            margin-top: 7px;
+            font-size: 21px;
+            line-height: 1.1;
+            color: var(--text);
+        }
+
+        .metric-value.positive { color: var(--green); }
+        .metric-value.negative { color: var(--red); }
+        .metric-value.neutral { color: var(--blue); }
+
+        .analysis-grid {
+            display: grid;
+            grid-template-columns: minmax(0, 1fr) 320px;
+            gap: 12px;
+            align-items: start;
+        }
+
+        .chart-card,
+        .insights-panel {
+            background: var(--panel);
+            border: 1px solid var(--line);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow);
             overflow: hidden;
         }
-        .chart-container .chart-loading {
+
+        .chart-header,
+        .insights-header {
+            min-height: 48px;
+            border-bottom: 1px solid var(--line-soft);
+            padding: 12px 14px;
             display: flex;
-            justify-content: center;
             align-items: center;
-            height: 500px;
-            color: #888;
-            font-size: 16px;
+            justify-content: space-between;
+            gap: 12px;
         }
-        .chart-container iframe { width: 100%; border: none; }
 
-        .strategy-desc {
-            background: #1a1a3e;
-            border: 1px solid #2a2a4a;
-            border-radius: 10px;
-            padding: 16px 20px;
-            margin-bottom: 20px;
+        .chart-header h2,
+        .insights-header h2 {
             font-size: 14px;
-            color: #aaa;
-            line-height: 1.6;
+            font-weight: 750;
         }
-        .strategy-desc strong { color: #FFD700; }
 
-        .footer {
-            text-align: center;
-            padding: 30px;
-            color: #555;
+        .chart-header span,
+        .insights-header span {
+            color: var(--muted);
             font-size: 12px;
         }
 
-        @media (max-width: 768px) {
-            .controls { grid-template-columns: 1fr 1fr; }
-            .metrics-grid { grid-template-columns: repeat(3, 1fr); }
+        .chart-loading {
+            min-height: 520px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: var(--muted);
+            font-size: 14px;
+        }
+
+        .plotly-chart {
+            width: 100%;
+            min-height: 680px;
+        }
+
+        .insights-panel {
+            min-height: 728px;
+        }
+
+        .insights-body {
+            padding: 14px;
+        }
+
+        .insight-section {
+            padding: 0 0 14px;
+            margin-bottom: 14px;
+            border-bottom: 1px solid var(--line-soft);
+        }
+
+        .insight-section:last-child {
+            border-bottom: 0;
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+
+        .insight-section h3 {
+            font-size: 12px;
+            color: var(--muted);
+            text-transform: uppercase;
+            letter-spacing: 0.06em;
+            margin-bottom: 8px;
+        }
+
+        .insight-section p {
+            color: #334155;
+            font-size: 13px;
+            line-height: 1.58;
+        }
+
+        .insight-list {
+            display: grid;
+            gap: 8px;
+            list-style: none;
+        }
+
+        .insight-list li {
+            display: flex;
+            justify-content: space-between;
+            gap: 12px;
+            color: #334155;
+            font-size: 13px;
+        }
+
+        .insight-list span:first-child {
+            color: var(--muted);
+        }
+
+        .risk-pill {
+            display: inline-flex;
+            align-items: center;
+            border-radius: 999px;
+            padding: 5px 9px;
+            background: var(--amber-soft);
+            color: var(--amber);
+            font-size: 12px;
+            font-weight: 700;
+            margin-bottom: 9px;
+        }
+
+        .data-note {
+            background: var(--panel-muted);
+            border: 1px solid var(--line-soft);
+            border-radius: 8px;
+            padding: 11px;
+            color: var(--muted);
+            font-size: 12px;
+            line-height: 1.55;
+        }
+
+        .error-text { color: var(--red); }
+
+        @media (max-width: 1100px) {
+            .run-strip {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+            }
+
+            .btn-primary {
+                grid-column: span 3;
+            }
+
+            .metrics-grid {
+                grid-template-columns: repeat(3, minmax(0, 1fr));
+            }
+
+            .analysis-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .insights-panel {
+                min-height: auto;
+            }
+        }
+
+        @media (max-width: 720px) {
+            .app-bar {
+                align-items: flex-start;
+                flex-direction: column;
+                padding: 14px 16px;
+            }
+
+            .system-status {
+                flex-wrap: wrap;
+            }
+
+            .workbench {
+                padding: 12px;
+            }
+
+            .run-strip,
+            .metrics-grid {
+                grid-template-columns: 1fr;
+            }
+
+            .btn-primary {
+                grid-column: auto;
+            }
+
+            .metric-card {
+                min-height: 62px;
+            }
+
+            .metric-value {
+                font-size: 19px;
+            }
+
+            .chart-header,
+            .insights-header {
+                align-items: flex-start;
+                flex-direction: column;
+            }
+
+            .plotly-chart {
+                min-height: 560px;
+            }
         }
     </style>
 </head>
 <body>
-    <div class="header">
-        <h1>📈 量化回测系统</h1>
-        <span>v0.2 | 模拟数据演示</span>
-    </div>
+    <div class="app-shell">
+        <header class="app-bar">
+            <div>
+                <div class="eyebrow">Strategy Research</div>
+                <h1>Quant Research Workbench</h1>
+                <p>策略回测 · 模拟数据 · Plotly 交互图表</p>
+            </div>
+            <div class="system-status">
+                <span class="status-dot"></span>
+                <span>Demo data ready</span>
+                <span>v0.2</span>
+            </div>
+        </header>
 
-    <div class="container">
-        <div class="controls" id="controls">
-            <div class="control-group">
-                <label>策略</label>
-                <select id="strategy">
-                    <option value="ma_cross">双均线交叉</option>
-                    <option value="rsi">RSI反转</option>
-                    <option value="macd">MACD金叉死叉</option>
-                    <option value="bollinger">布林带突破</option>
-                </select>
-            </div>
-            <div class="control-group">
-                <label>股票代码</label>
-                <input id="symbol" type="text" value="sh600519">
-            </div>
-            <div class="control-group">
-                <label>数据天数</label>
-                <input id="days" type="number" value="500" min="100" max="2000">
-            </div>
-            <div class="control-group">
-                <label>起始价格(¥)</label>
-                <input id="price" type="number" value="100" min="10">
-            </div>
-            <div class="control-group">
-                <label>初始资金(¥)</label>
-                <input id="cash" type="number" value="100000" min="10000">
-            </div>
-            <div class="control-group">
-                <label>&nbsp;</label>
-                <button class="btn" onclick="runBacktest()">🚀 运行回测</button>
-            </div>
-        </div>
+        <main class="workbench">
+            <section class="run-strip" id="controls" aria-label="回测参数">
+                <div class="control-field">
+                    <label for="strategy">策略</label>
+                    <select id="strategy">
+                        <option value="ma_cross">双均线交叉</option>
+                        <option value="rsi">RSI反转</option>
+                        <option value="macd">MACD金叉死叉</option>
+                        <option value="bollinger">布林带突破</option>
+                    </select>
+                </div>
+                <div class="control-field">
+                    <label for="symbol">股票代码</label>
+                    <input id="symbol" type="text" value="sh600519">
+                </div>
+                <div class="control-field">
+                    <label for="days">数据天数</label>
+                    <input id="days" type="number" value="500" min="100" max="2000">
+                </div>
+                <div class="control-field">
+                    <label for="price">起始价格(¥)</label>
+                    <input id="price" type="number" value="100" min="10">
+                </div>
+                <div class="control-field">
+                    <label for="cash">初始资金(¥)</label>
+                    <input id="cash" type="number" value="100000" min="10000">
+                </div>
+                <button class="btn-primary" onclick="runBacktest()">运行回测</button>
+            </section>
 
-        <div id="strategyDesc" class="strategy-desc">
-            💡 选择一个策略，点击「运行回测」查看结果。数据由模拟生成，无需网络。
-        </div>
+            <section id="metrics" class="metrics-grid" aria-label="核心指标"></section>
 
-        <div id="metrics" class="metrics-grid"></div>
+            <section id="analysisGrid" class="analysis-grid">
+                <section id="chart" class="chart-card" aria-label="回测图表">
+                    <div class="chart-header">
+                        <div>
+                            <h2>价格走势、交易信号与资产曲线</h2>
+                            <span>支持缩放、悬停查看和图例切换</span>
+                        </div>
+                        <span id="chartStatus">等待运行</span>
+                    </div>
+                    <div class="chart-loading">点击“运行回测”或等待演示数据加载</div>
+                </section>
 
-        <div id="chart" class="chart-container">
-            <div class="chart-loading">点击「运行回测」开始</div>
-        </div>
-
-        <div class="footer">
-            数据仅为模拟演示，不构成投资建议。回测结果不代表未来表现。
-        </div>
+                <aside id="insightsPanel" class="insights-panel" aria-label="策略洞察">
+                    <div class="insights-header">
+                        <div>
+                            <h2>策略洞察</h2>
+                            <span>等待策略结果</span>
+                        </div>
+                    </div>
+                    <div class="insights-body">
+                        <div class="data-note">演示数据加载后将显示策略逻辑、风险摘要和参数摘要。</div>
+                    </div>
+                </aside>
+            </section>
+        </main>
     </div>
 
     <script>
@@ -533,10 +818,141 @@ _PAGE_HTML = """
         };
 
         document.getElementById('strategy').addEventListener('change', function() {
-            const info = STRATEGY_INFO[this.value];
-            document.getElementById('strategyDesc').innerHTML =
-                '<strong>' + info.name + '</strong> — ' + info.desc;
+            renderInsights();
         });
+
+        function renderChart(chartSpec) {
+            const container = document.getElementById('chart');
+
+            if (!window.Plotly) {
+                container.innerHTML = `
+                    <div class="chart-header">
+                        <div>
+                            <h2>价格走势、交易信号与资产曲线</h2>
+                            <span class="error-text">Plotly 加载失败，请刷新页面重试</span>
+                        </div>
+                    </div>
+                    <div class="chart-loading error-text">Plotly 加载失败</div>
+                `;
+                return;
+            }
+
+            let spec;
+            try {
+                spec = typeof chartSpec === 'string' ? JSON.parse(chartSpec) : chartSpec;
+            } catch (e) {
+                container.innerHTML = `
+                    <div class="chart-header">
+                        <div>
+                            <h2>价格走势、交易信号与资产曲线</h2>
+                            <span class="error-text">图表数据解析失败</span>
+                        </div>
+                    </div>
+                    <div class="chart-loading error-text">${e.message}</div>
+                `;
+                return;
+            }
+
+            container.innerHTML = `
+                <div class="chart-header">
+                    <div>
+                        <h2>价格走势、交易信号与资产曲线</h2>
+                        <span>支持缩放、悬停查看和图例切换</span>
+                    </div>
+                    <span id="chartStatus">已更新</span>
+                </div>
+                <div id="plotlyChart" class="plotly-chart"></div>
+            `;
+            Plotly.newPlot(
+                'plotlyChart',
+                spec.data || [],
+                spec.layout || {},
+                Object.assign({ responsive: true, displaylogo: false }, spec.config || {})
+            );
+        }
+
+        function metricClass(value) {
+            const numVal = parseFloat(value);
+            if (isNaN(numVal)) return 'neutral';
+            if (numVal > 0) return 'positive';
+            if (numVal < 0) return 'negative';
+            return 'neutral';
+        }
+
+        function renderMetrics(metrics = {}) {
+            const container = document.getElementById('metrics');
+            container.innerHTML = '';
+
+            const items = [
+                { key: '年化收益率', label: '年化收益率' },
+                { key: '总收益率', label: '总收益率' },
+                { key: '最大回撤', label: '最大回撤' },
+                { key: '胜率', label: '胜率' },
+                { key: '总交易次数', label: '交易次数' },
+                { key: '最终资产', label: '最终资产' },
+            ];
+
+            items.forEach(item => {
+                const value = metrics[item.key] || '-';
+                const card = document.createElement('div');
+                card.className = 'metric-card';
+                card.innerHTML = `
+                    <span class="metric-label">${item.label}</span>
+                    <strong class="metric-value ${metricClass(value)}">${value}</strong>
+                `;
+                container.appendChild(card);
+            });
+        }
+
+        function renderInsights(metrics = {}) {
+            const strategyId = document.getElementById('strategy').value;
+            const info = STRATEGY_INFO[strategyId] || STRATEGY_INFO.ma_cross;
+            const symbol = document.getElementById('symbol').value || '-';
+            const days = document.getElementById('days').value || '-';
+            const price = document.getElementById('price').value || '-';
+            const cash = document.getElementById('cash').value || '-';
+            const maxDrawdown = metrics['最大回撤'] || '-';
+            const annualReturn = metrics['年化收益率'] || '-';
+            const tradeCount = metrics['总交易次数'] || '-';
+            const winRate = metrics['胜率'] || '-';
+
+            document.getElementById('insightsPanel').innerHTML = `
+                <div class="insights-header">
+                    <div>
+                        <h2>策略洞察</h2>
+                        <span>${info.name}</span>
+                    </div>
+                </div>
+                <div class="insights-body">
+                    <section class="insight-section">
+                        <h3>策略逻辑</h3>
+                        <p>${info.desc}</p>
+                    </section>
+                    <section class="insight-section">
+                        <h3>风险摘要</h3>
+                        <div class="risk-pill">最大回撤 ${maxDrawdown}</div>
+                        <ul class="insight-list">
+                            <li><span>年化收益率</span><strong>${annualReturn}</strong></li>
+                            <li><span>胜率</span><strong>${winRate}</strong></li>
+                            <li><span>交易次数</span><strong>${tradeCount}</strong></li>
+                        </ul>
+                    </section>
+                    <section class="insight-section">
+                        <h3>参数摘要</h3>
+                        <ul class="insight-list">
+                            <li><span>标的代码</span><strong>${symbol}</strong></li>
+                            <li><span>样本长度</span><strong>${days} 天</strong></li>
+                            <li><span>起始价格</span><strong>¥${price}</strong></li>
+                            <li><span>初始资金</span><strong>¥${cash}</strong></li>
+                        </ul>
+                    </section>
+                    <section class="insight-section">
+                        <h3>数据说明</h3>
+                        <div class="data-note">当前页面使用模拟行情数据生成回测结果，仅用于策略研究和界面演示，不构成投资建议。</div>
+                    </section>
+                </div>
+            `;
+        }
 
         async function runBacktest() {
             const strategy = document.getElementById('strategy').value;
@@ -545,9 +961,18 @@ _PAGE_HTML = """
             const price = document.getElementById('price').value;
             const cash = document.getElementById('cash').value;
 
-            document.getElementById('chart').innerHTML =
-                '<div class="chart-loading">⏳ 运行回测中...</div>';
+            document.getElementById('chart').innerHTML = `
+                <div class="chart-header">
+                    <div>
+                        <h2>价格走势、交易信号与资产曲线</h2>
+                        <span>正在运行回测</span>
+                    </div>
+                    <span id="chartStatus">计算中</span>
+                </div>
+                <div class="chart-loading">运行回测中...</div>
+            `;
             document.getElementById('metrics').innerHTML = '';
+            renderInsights();
 
             try {
                 const resp = await fetch(
@@ -556,75 +981,44 @@ _PAGE_HTML = """
                 const data = await resp.json();
 
                 if (data.errors && data.errors.length > 0) {
-                    document.getElementById('chart').innerHTML =
-                        '<div class="chart-loading" style="color:#ef5350;">❌ ' + data.errors.join(', ') + '</div>';
+                    document.getElementById('chart').innerHTML = `
+                        <div class="chart-header">
+                            <div>
+                                <h2>价格走势、交易信号与资产曲线</h2>
+                                <span class="error-text">回测返回错误</span>
+                            </div>
+                        </div>
+                        <div class="chart-loading error-text">${data.errors.join(', ')}</div>
+                    `;
+                    renderInsights(data.metrics || {});
                     return;
                 }
 
-                // 渲染指标卡片
                 renderMetrics(data.metrics);
-
-                // 渲染图表
-                document.getElementById('chart').innerHTML = data.chart;
-
-                // 重绘Plotly图表
-                if (window.Plotly) {
-                    const graphs = document.querySelectorAll('#chart .js-plotly-plot');
-                    graphs.forEach(g => Plotly.react(g));
-                }
+                renderInsights(data.metrics);
+                renderChart(data.chart);
 
             } catch (e) {
-                document.getElementById('chart').innerHTML =
-                    '<div class="chart-loading" style="color:#ef5350;">❌ 请求失败: ' + e.message + '</div>';
+                document.getElementById('chart').innerHTML = `
+                    <div class="chart-header">
+                        <div>
+                            <h2>价格走势、交易信号与资产曲线</h2>
+                            <span class="error-text">请求失败</span>
+                        </div>
+                    </div>
+                    <div class="chart-loading error-text">${e.message}</div>
+                `;
+                renderInsights();
             }
         }
 
-        function renderMetrics(metrics) {
-            const container = document.getElementById('metrics');
-            container.innerHTML = '';
-
-            const items = [
-                { key: '年化收益率', label: '年化收益率' },
-                { key: '总收益率', label: '总收益率' },
-                { key: '最大回撤', label: '最大回撤' },
-                { key: '夏普比率', label: '夏普比率' },
-                { key: '索提诺比率', label: '索提诺比率' },
-                { key: '卡玛比率', label: '卡玛比率' },
-                { key: '总交易次数', label: '交易次数' },
-                { key: '胜率', label: '胜率' },
-                { key: '最终资产', label: '最终资产' },
-                { key: '年化波动率', label: '年化波动率' },
-            ];
-
-            items.forEach(item => {
-                let value = metrics[item.key] || '-';
-                let cls = 'neutral';
-
-                // 判断正负
-                const numVal = parseFloat(value);
-                if (!isNaN(numVal)) {
-                    if (numVal > 0) cls = 'positive';
-                    else if (numVal < 0) cls = 'negative';
-                }
-
-                const card = document.createElement('div');
-                card.className = 'metric-card';
-                card.innerHTML = `
-                    <div class="label">${item.label}</div>
-                    <div class="value ${cls}">${value}</div>
-                `;
-                container.appendChild(card);
-            });
-        }
-
-        // 初始加载演示数据
         window.addEventListener('DOMContentLoaded', async () => {
+            renderInsights();
             const resp = await fetch('/api/backtest/demo');
             const data = await resp.json();
             renderMetrics(data.metrics);
-            document.getElementById('chart').innerHTML = data.chart;
-            document.getElementById('strategyDesc').innerHTML =
-                '<strong>双均线交叉</strong> — 短期均线上穿长期均线买入，下穿卖出。经典的顺势跟踪策略。';
+            renderInsights(data.metrics);
+            renderChart(data.chart);
         });
     </script>
 </body>
