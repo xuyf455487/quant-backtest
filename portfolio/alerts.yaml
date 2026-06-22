@@ -1,0 +1,5 @@
+alerts:
+- direction: 涨破
+  name: 红利ETF
+  price: 3.3
+  symbol: '510880'
