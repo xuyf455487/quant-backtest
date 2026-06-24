@@ -103,8 +103,11 @@ def format_daily_report(assets: list, dca_advice: str, triggered_alerts: list) -
     lines = []
 
     # ── 标题 ──
+    # 找到数据最新日期
+    data_dates = [a.get("data_date") for a in assets if a.get("data_date")]
+    max_date = max(data_dates) if data_dates else now.split(" ")[0]
     lines.append(f"📈 *每日投资策略报告*")
-    lines.append(f"📅 {now}")
+    lines.append(f"📅 {now}　📌 数据截至 {max_date}")
     lines.append("")
 
     # ── 价格提醒 ──

@@ -18,8 +18,10 @@ def fetch_hist(symbol: str, days: int = 60, start_date: str = None, end_date: st
     if start_date and end_date:
         pass  # use as-is
     else:
-        from datetime import datetime, timedelta
-        end = datetime.now()
+        from datetime import datetime, timedelta, timezone
+        bj_tz = timezone(timedelta(hours=8))
+        bj_now = datetime.now(bj_tz)
+        end = bj_now
         start = end - timedelta(days=days * 2)
         start_date = start.strftime("%Y%m%d")
         end_date = end.strftime("%Y%m%d")
